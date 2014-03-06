@@ -11,6 +11,7 @@ BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtdeclarative-devel
 BuildRequires:  qt5-qtdeclarative-qtquick-devel
 BuildRequires:  qt5-qmake
+BuildRequires:  droid-system-sbj-devel
 BuildRequires:  fdupes
 
 %description
