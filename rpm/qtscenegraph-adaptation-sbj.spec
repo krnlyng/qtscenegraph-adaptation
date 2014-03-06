@@ -13,7 +13,7 @@ BuildRequires:  qt5-qtdeclarative-qtquick-devel
 BuildRequires:  qt5-qmake
 BuildRequires:  droid-system-sbj-devel
 BuildRequires:  fdupes
-BuildRequires:  droid-system-sbj
+BuildRequires:  libhybris-sbj-libhardware-devel
 
 %description
 This package contains system specific changes for the
