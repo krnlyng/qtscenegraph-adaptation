@@ -25,8 +25,7 @@ Qt Quick Scene Graph.
 
 %build
 export QTDIR=/usr/share/qt5
-export ANDROID_SDK_INCLUDE=/usr/include/droid-sbj
-%qmake5 -config "animationdriver programbinary eglgralloctexture"
+%qmake5 -config "animationdriver programbinary eglgralloctexture" "INCLUDEPATH+=/usr/include/droid-sbj /usr/include/droid-sbj/android"
 
 %install
 rm -rf %{buildroot}
