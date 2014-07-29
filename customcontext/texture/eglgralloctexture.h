@@ -50,7 +50,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
-#include <android/system/window.h>
+#include <system/window.h>
 
 class QQuickWindow;
 

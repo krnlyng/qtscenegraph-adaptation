@@ -48,8 +48,8 @@
 
 #include <QtQuick/QQuickWindow>
 
-#include <android/hardware/gralloc.h>
-#include <android/system/window.h>
+#include <hardware/gralloc.h>
+#include <system/window.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
