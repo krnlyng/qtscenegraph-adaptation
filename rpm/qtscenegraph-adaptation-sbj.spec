@@ -11,9 +11,7 @@ BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtdeclarative-devel
 BuildRequires:  qt5-qtdeclarative-qtquick-devel
 BuildRequires:  qt5-qmake
-BuildRequires:  droid-system-sbj-devel
 BuildRequires:  fdupes
-BuildRequires:  libhybris-sbj-libhardware-devel
 
 %description
 This package contains system specific changes for the
@@ -26,7 +24,7 @@ Qt Quick Scene Graph.
 
 %build
 export QTDIR=/usr/share/qt5
-%qmake5 -config "animationdriver programbinary eglgralloctexture" "INCLUDEPATH+=/usr/include/droid-sbj /usr/include/droid-sbj/android"
+%qmake5 -config "animationdriver programbinary hybristexture"
 
 %install
 rm -rf %{buildroot}
