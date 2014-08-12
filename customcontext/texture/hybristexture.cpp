@@ -39,91 +39,79 @@
 **
 ****************************************************************************/
 
-#include "eglgralloctexture.h"
+#include "hybristexture.h"
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QThread>
 #include <QtCore/QCoreApplication>
 #include <QtCore/qdebug.h>
 
-#include <QtQuick/QQuickWindow>
-
-#include <hardware/gralloc.h>
-#include <system/window.h>
+#include <QtGui/private/qdrawhelper_p.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-
-// Taken from libhybris
-#define container_of(ptr, type, member) ({                  \
-    const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
-    (type *)( (char *)__mptr - offsetof(type,member) );})
-
-// Taken from qdrawhelper_p.h
-static inline uint PREMUL(uint x) {
-    uint a = x >> 24;
-    uint t = (x & 0xff00ff) * a;
-    t = (t + ((t >> 8) & 0xff00ff) + 0x800080) >> 8;
-    t &= 0xff00ff;
-
-    x = ((x >> 8) & 0xff) * a;
-    x = (x + ((x >> 8) & 0xff) + 0x80);
-    x &= 0xff00;
-    x |= t | (a << 24);
-    return x;
-}
-static inline int qt_div_255(int x) { return (x + (x>>8) + 0x80) >> 8; }
-
 
 #ifndef QSG_NO_RENDER_TIMING
 static bool qsg_render_timing = !qgetenv("QSG_RENDER_TIMING").isEmpty();
 static QElapsedTimer qsg_renderer_timer;
 #endif
 
+// from hybris_nativebuffer.h in libhybris
+#define HYBRIS_USAGE_SW_READ_RARELY     0x00000002
+#define HYBRIS_USAGE_SW_WRITE_RARELY    0x00000020
+#define HYBRIS_USAGE_HW_TEXTURE         0x00000100
+#define HYBRIS_PIXEL_FORMAT_RGBA_8888   1
+#define HYBRIS_PIXEL_FORMAT_BGRA_8888   5
+
+#define EGL_NATIVE_BUFFER_HYBRIS             0x3140
+
 namespace CustomContext {
 
-gralloc_module_t *gralloc = 0;
-alloc_device_t *alloc = 0;
-
 extern "C" {
-    typedef void (* _glEGLImageTargetTexture2DOES)(GLenum target, EGLImageKHR image);
-    typedef EGLImageKHR (* _eglCreateImageKHR)(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attribs);
-    typedef EGLBoolean (* _eglDestroyImageKHR)(EGLDisplay dpy, EGLImageKHR image);
+    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisCreateNativeBuffer)(EGLint width, EGLint height, EGLint usage, EGLint format, EGLint *stride, EGLClientBuffer *buffer);
+    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisLockNativeBuffer)(EGLClientBuffer buffer, EGLint usage, EGLint l, EGLint t, EGLint w, EGLint h, void **vaddr);
+    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisUnlockNativeBuffer)(EGLClientBuffer buffer);
+    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisReleaseNativeBuffer)(EGLClientBuffer buffer);
+
+    typedef void (EGLAPIENTRYP _glEGLImageTargetTexture2DOES)(GLenum target, EGLImageKHR image);
+    typedef EGLImageKHR (EGLAPIENTRYP _eglCreateImageKHR)(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attribs);
+    typedef EGLBoolean (EGLAPIENTRYP _eglDestroyImageKHR)(EGLDisplay dpy, EGLImageKHR image);
 }
+
 _glEGLImageTargetTexture2DOES glEGLImageTargetTexture2DOES = 0;
 _eglCreateImageKHR eglCreateImageKHR = 0;
 _eglDestroyImageKHR eglDestroyImageKHR = 0;
 
+_eglHybrisCreateNativeBuffer eglHybrisCreateNativeBuffer = 0;
+_eglHybrisLockNativeBuffer eglHybrisLockNativeBuffer = 0;
+_eglHybrisUnlockNativeBuffer eglHybrisUnlockNativeBuffer = 0;
+_eglHybrisReleaseNativeBuffer eglHybrisReleaseNativeBuffer = 0;
+
 static void initialize()
 {
-    hw_get_module(GRALLOC_HARDWARE_MODULE_ID, (const hw_module_t **) &gralloc);
-    gralloc_open((const hw_module_t *) gralloc, &alloc);
-
-#ifdef CUSTOMCONTEXT_DEBUG
-    qDebug("EglGrallocTexture: initializing gralloc=%p, alloc=%p", gralloc, alloc);
-#endif
-
     glEGLImageTargetTexture2DOES = (_glEGLImageTargetTexture2DOES) eglGetProcAddress("glEGLImageTargetTexture2DOES");
     eglCreateImageKHR = (_eglCreateImageKHR) eglGetProcAddress("eglCreateImageKHR");
     eglDestroyImageKHR = (_eglDestroyImageKHR) eglGetProcAddress("eglDestroyImageKHR");
+    eglHybrisCreateNativeBuffer = (_eglHybrisCreateNativeBuffer) eglGetProcAddress("eglHybrisCreateNativeBuffer");
+    eglHybrisLockNativeBuffer = (_eglHybrisLockNativeBuffer) eglGetProcAddress("eglHybrisLockNativeBuffer");
+    eglHybrisUnlockNativeBuffer = (_eglHybrisUnlockNativeBuffer) eglGetProcAddress("eglHybrisUnlockNativeBuffer");
+    eglHybrisReleaseNativeBuffer = (_eglHybrisReleaseNativeBuffer) eglGetProcAddress("eglHybrisReleaseNativeBuffer");
 }
 
 NativeBuffer::NativeBuffer(const QImage &image)
 {
-    m_hasAlpha = image.hasAlphaChannel();
+    hasAlpha = image.hasAlphaChannel();
     const QImage::Format iformat = image.format();
     format = iformat == QImage::Format_RGBA8888_Premultiplied
             || iformat == QImage::Format_RGBX8888
             || iformat == QImage::Format_RGBA8888
-            ? HAL_PIXEL_FORMAT_RGBA_8888
-            : HAL_PIXEL_FORMAT_BGRA_8888;
-    usage = GRALLOC_USAGE_SW_READ_RARELY | GRALLOC_USAGE_SW_WRITE_RARELY | GRALLOC_USAGE_HW_TEXTURE;
+            ? HYBRIS_PIXEL_FORMAT_RGBA_8888
+            : HYBRIS_PIXEL_FORMAT_BGRA_8888;
+    int usage = HYBRIS_USAGE_SW_READ_RARELY | HYBRIS_USAGE_SW_WRITE_RARELY | HYBRIS_USAGE_HW_TEXTURE;
     width = image.width();
     height = image.height();
     stride = 0;
-    handle = 0;
-    common.incRef = _incRef;
-    common.decRef = _decRef;
+    buffer = 0;
 
 #ifdef CUSTOMCONTEXT_DEBUG
     QElapsedTimer timer;
@@ -132,8 +120,11 @@ NativeBuffer::NativeBuffer(const QImage &image)
 
     char *data = 0;
 
-    if (alloc->alloc(alloc, width,  height, format, usage, &handle, &stride)) {
-        qDebug() << "alloc failed...";
+    EGLint status;
+
+    status = eglHybrisCreateNativeBuffer(width, height, usage, format, &stride, &buffer);
+    if (status != EGL_TRUE || !buffer) {
+        qDebug() << "eglHybrisCreateNativeBuffer failed, error:" << hex << eglGetError();
         return;
     }
 
@@ -141,8 +132,9 @@ NativeBuffer::NativeBuffer(const QImage &image)
     quint64 allocTime = timer.elapsed();
 #endif
 
-    if (gralloc->lock(gralloc, handle, GRALLOC_USAGE_SW_WRITE_RARELY, 0, 0, width, height, (void **) &data) || data == 0) {
-        qDebug() << "gralloc lock failed...";
+    status = eglHybrisLockNativeBuffer(buffer, HYBRIS_USAGE_SW_WRITE_RARELY, 0, 0, width, height, (void **) &data);
+    if (status != EGL_TRUE || data == 0) {
+        qDebug() << "eglHybrisLockNativeBuffer failed, error:" << hex << eglGetError();
         release();
         return;
     }
@@ -195,8 +187,8 @@ NativeBuffer::NativeBuffer(const QImage &image)
     quint64 copyTime = timer.elapsed();
 #endif
 
-    if (gralloc->unlock(gralloc, handle)) {
-        qDebug() << "gralloc unlock failed...";
+    if (!eglHybrisUnlockNativeBuffer(buffer)) {
+        qDebug() << "eglHybrisUnlockNativeBuffer failed, error:" << hex << eglGetError();
         release();
         return;
     }
@@ -205,16 +197,14 @@ NativeBuffer::NativeBuffer(const QImage &image)
     quint64 unlockTime  = timer.elapsed();
 #endif
 
-    m_eglImage = eglCreateImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY),
+    eglImage = eglCreateImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY),
                                    EGL_NO_CONTEXT,
-                                   EGL_NATIVE_BUFFER_ANDROID,
-                                   (ANativeWindowBuffer *) this,
+                                   EGL_NATIVE_BUFFER_HYBRIS,
+                                   buffer,
                                    0);
 
-    if (!m_eglImage) {
-#ifdef CUSTOMCONTEXT_DEBUG
-        qDebug("EglGrallocTexture: failed to create EGLImage, error=%x", eglGetError());
-#endif
+    if (!eglImage) {
+        qDebug() << "eglCreateImageKHR failed, error:" << hex << eglGetError();
         release();
         return;
     }
@@ -224,9 +214,9 @@ NativeBuffer::NativeBuffer(const QImage &image)
 #endif
 
 #ifdef CUSTOMCONTEXT_DEBUG
-    qDebug("EglGrallocTexture: created gralloc buffer: %d x %d, handle=%p, stride=%d/%d (%d), time: alloc=%d, lock=%d, copy=%d, unlock=%d, eglImage=%d",
+    qDebug("HybrisTexture: created buffer: %d x %d, buffer=%p, stride=%d/%d (%d), time: alloc=%d, lock=%d, copy=%d, unlock=%d, eglImage=%d",
            width, height,
-           handle,
+           buffer,
            stride, stride * 4, image.bytesPerLine(),
            (int) allocTime,
            (int) (lockTime - allocTime),
@@ -239,34 +229,21 @@ NativeBuffer::NativeBuffer(const QImage &image)
 NativeBuffer::~NativeBuffer()
 {
 #ifdef CUSTOMCONTEXT_DEBUG
-    qDebug() << "EglGrallocTexture: native buffer released.." << (void *) this;
+    qDebug() << "HybrisTexture: native buffer released.." << (void *) this;
 #endif
     release();
 }
 
-void NativeBuffer::releaseEglImage()
-{
-    eglDestroyImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY), m_eglImage);
-    m_eglImage = 0;
-}
-
-void NativeBuffer::_incRef(android_native_base_t* base)
-{
-    NativeBuffer *b = container_of(base, NativeBuffer, common);
-    b->m_ref.ref();
-}
-
-void NativeBuffer::_decRef(android_native_base_t* base)
-{
-    NativeBuffer *b = container_of(base, NativeBuffer, common);
-    if (!b->m_ref.deref())
-        delete b;
-}
-
 void NativeBuffer::release()
 {
-    alloc->free(alloc, handle);
-    handle = 0;
+    if (eglImage) {
+        eglDestroyImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY), eglImage);
+        eglImage = 0;
+    }
+    if (buffer) {
+        eglHybrisReleaseNativeBuffer(buffer);
+        buffer = 0;
+    }
 }
 
 NativeBuffer *NativeBuffer::create(const QImage &image)
@@ -274,16 +251,16 @@ NativeBuffer *NativeBuffer::create(const QImage &image)
     if (image.width() * image.height() < 500 * 500 || image.depth() != 32)
         return 0;
 
-    if (gralloc == 0) {
+    if (!eglHybrisCreateNativeBuffer) {
         initialize();
-        if (!gralloc)
+        if (!eglHybrisCreateNativeBuffer)
             return 0;
     }
 
     NativeBuffer *buffer = new NativeBuffer(image);
-    if (buffer && !buffer->handle) {
+    if (buffer && !buffer->buffer) {
 #ifdef CUSTOMCONTEXT_DEBUG
-        qDebug("EglGrallocTexture: failed to allocate native buffer for image: %d x %d", image.width(), image.height());
+        qDebug("HybrisTexture: failed to allocate native buffer for image: %d x %d", image.width(), image.height());
 #endif
         delete buffer;
         return 0;
@@ -292,7 +269,7 @@ NativeBuffer *NativeBuffer::create(const QImage &image)
     return buffer;
 }
 
-EglGrallocTexture::EglGrallocTexture(NativeBuffer *buffer)
+HybrisTexture::HybrisTexture(NativeBuffer *buffer)
     : m_id(0)
     , m_buffer(buffer)
     , m_bound(false)
@@ -300,11 +277,11 @@ EglGrallocTexture::EglGrallocTexture(NativeBuffer *buffer)
 {
     Q_ASSERT(buffer);
 #ifdef CUSTOMCONTEXT_DEBUG
-    qDebug() << "EglGrallocTexture: created" << QSize(buffer->width, buffer->height) << buffer << (void *) (buffer ? buffer->eglImage() : 0) << (void *) (buffer ? buffer->handle : 0);
+    qDebug() << "HybrisTexture: created" << QSize(buffer->width, buffer->height) << buffer << (void *) (buffer ? buffer->eglImage : 0) << (void *) (buffer ? buffer->buffer : 0);
 #endif
 }
 
-EglGrallocTexture::~EglGrallocTexture()
+HybrisTexture::~HybrisTexture()
 {
     if (m_id)
         glDeleteTextures(1, &m_id);
@@ -312,7 +289,7 @@ EglGrallocTexture::~EglGrallocTexture()
         delete m_buffer;
 }
 
-void EglGrallocTexture::bind()
+void HybrisTexture::bind()
 {
     glBindTexture(GL_TEXTURE_2D, textureId());
     updateBindOptions(!m_bound);
@@ -327,101 +304,101 @@ void EglGrallocTexture::bind()
             qsg_renderer_timer.start();
 
         while (glGetError() != GL_NO_ERROR); // Clear pending errors
-        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m_buffer->eglImage());
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m_buffer->eglImage);
 
         int error;
         while ((error = glGetError()) != GL_NO_ERROR)
             qDebug() << "Error after glEGLImageTargetTexture2DOES" << hex << error;
 
         if (Q_UNLIKELY(qsg_render_timing))
-            qDebug("   - eglgralloctexture(%dx%d) bind=%d ms", m_buffer->width, m_buffer->height, (int) qsg_renderer_timer.elapsed());
+            qDebug("   - Hybristexture(%dx%d) bind=%d ms", m_buffer->width, m_buffer->height, (int) qsg_renderer_timer.elapsed());
     }
 }
 
-int EglGrallocTexture::textureId() const
+int HybrisTexture::textureId() const
 {
     if (m_id == 0)
         glGenTextures(1, &m_id);
     return m_id;
 }
 
-QSize EglGrallocTexture::textureSize() const
+QSize HybrisTexture::textureSize() const
 {
     return QSize(m_buffer->width, m_buffer->height);
 }
 
-bool EglGrallocTexture::hasAlphaChannel() const
+bool HybrisTexture::hasAlphaChannel() const
 {
-    return m_buffer->hasAlpha();
+    return m_buffer->hasAlpha;
 }
 
-bool EglGrallocTexture::hasMipmaps() const
+bool HybrisTexture::hasMipmaps() const
 {
     return false;
 }
 
-EglGrallocTexture *EglGrallocTexture::create(const QImage &image)
+HybrisTexture *HybrisTexture::create(const QImage &image)
 {
     NativeBuffer *buffer = NativeBuffer::create(image);
     if (!buffer)
         return 0;
-    EglGrallocTexture *texture = new EglGrallocTexture(buffer);
+    HybrisTexture *texture = new HybrisTexture(buffer);
     texture->m_ownsBuffer = true;
     return texture;
 }
 
-EglGrallocTextureFactory::EglGrallocTextureFactory(NativeBuffer *buffer)
+HybrisTextureFactory::HybrisTextureFactory(NativeBuffer *buffer)
     : m_buffer(buffer)
 {
 #ifdef CUSTOMCONTEXT_DEBUG
-    qDebug("EglGrallocTexture: creating texture factory size=%dx%d, buffer=%p", buffer->width, buffer->height, buffer);
+    qDebug("HybrisTexture: creating texture factory size=%dx%d, buffer=%p", buffer->width, buffer->height, buffer);
 #endif
 }
 
-EglGrallocTextureFactory::~EglGrallocTextureFactory()
+HybrisTextureFactory::~HybrisTextureFactory()
 {
-    m_buffer->releaseEglImage();
+    delete m_buffer;
 }
 
-QSGTexture *EglGrallocTextureFactory::createTexture(QQuickWindow *) const
+QSGTexture *HybrisTextureFactory::createTexture(QQuickWindow *) const
 {
-    return new EglGrallocTexture(m_buffer);
+    return new HybrisTexture(m_buffer);
 }
 
-QSize EglGrallocTextureFactory::textureSize() const
+QSize HybrisTextureFactory::textureSize() const
 {
     return QSize(m_buffer->width, m_buffer->height);
 }
 
-int EglGrallocTextureFactory::textureByteCount() const
+int HybrisTextureFactory::textureByteCount() const
 {
     return m_buffer->stride * m_buffer->height;
 }
 
-QImage EglGrallocTextureFactory::image() const
+QImage HybrisTextureFactory::image() const
 {
     void *data = 0;
-    if (gralloc->lock(gralloc, m_buffer->handle, GRALLOC_USAGE_SW_READ_RARELY, 0, 0, m_buffer->width, m_buffer->height, (void **) &data) || data == 0) {
-        qDebug("EglGrallocTextureFactory::image(): lock failed, cannot get image data");
+    if (!eglHybrisLockNativeBuffer(m_buffer->buffer, HYBRIS_USAGE_SW_READ_RARELY, 0, 0, m_buffer->width, m_buffer->height, (void **) &data) || data == 0) {
+        qDebug() << "HybrisTextureFactory::image(): lock failed, cannot get image data; error:" << hex << eglGetError();
         return QImage();
     }
 
     QImage content = QImage((const uchar *) data, m_buffer->width, m_buffer->height, m_buffer->stride * 4,
-                            m_buffer->hasAlpha() ? QImage::Format_ARGB32_Premultiplied
+                            m_buffer->hasAlpha ? QImage::Format_ARGB32_Premultiplied
                                                  : QImage::Format_RGB32).copy();
 
-    if (gralloc->unlock(gralloc, m_buffer->handle)) {
-        qDebug("EglGrallocTextureFactory::image(): unlock failed");
+    if (!eglHybrisUnlockNativeBuffer(m_buffer->buffer)) {
+        qDebug() << "HybrisTextureFactory::image(): unlock failed; error:" << hex << eglGetError();
         return QImage();
     }
 
     return content;
 }
 
-EglGrallocTextureFactory *EglGrallocTextureFactory::create(const QImage &image)
+HybrisTextureFactory *HybrisTextureFactory::create(const QImage &image)
 {
     NativeBuffer *buffer = NativeBuffer::create(image);
-    return buffer ? new EglGrallocTextureFactory(buffer) : 0;
+    return buffer ? new HybrisTextureFactory(buffer) : 0;
 }
 
 }
