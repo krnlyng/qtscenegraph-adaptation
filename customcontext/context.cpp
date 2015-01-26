@@ -426,6 +426,7 @@ QSurfaceFormat Context::defaultSurfaceFormat() const
         format.setDepthBufferSize(24);
     if (m_useMultisampling)
         format.setSamples(m_sampleCount);
+    format.setAlphaBufferSize(8);
     return format;
 }
 #endif
