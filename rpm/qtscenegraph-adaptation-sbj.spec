@@ -11,7 +11,6 @@ BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtdeclarative-devel
 BuildRequires:  qt5-qtdeclarative-qtquick-devel
 BuildRequires:  qt5-qmake
-BuildRequires:  fdupes
 
 %description
 This package contains system specific changes for the
@@ -24,7 +23,7 @@ Qt Quick Scene Graph.
 
 %build
 export QTDIR=/usr/share/qt5
-%qmake5 -config "animationdriver programbinary hybristexture"
+%qmake5 -config "surfaceformat programbinary hybristexture"
 
 %install
 rm -rf %{buildroot}

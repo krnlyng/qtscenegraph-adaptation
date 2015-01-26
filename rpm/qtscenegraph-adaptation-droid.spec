@@ -11,9 +11,6 @@ BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtdeclarative-devel
 BuildRequires:  qt5-qtdeclarative-qtquick-devel
 BuildRequires:  qt5-qmake
-BuildRequires:  pkgconfig(android-headers)
-BuildRequires:  pkgconfig(libhardware)
-BuildRequires:  fdupes
 
 %description
 This package contains system specific changes for the
@@ -26,7 +23,7 @@ Qt Quick Scene Graph.
 
 %build
 export QTDIR=/usr/share/qt5
-%qmake5 -config "animationdriver programbinary eglgralloctexture" "INCLUDEPATH+=/usr/lib/droid-devel/droid-headers/"
+%qmake5 -config "surfaceformat programbinary hybristexture"
 
 %install
 rm -rf %{buildroot}
