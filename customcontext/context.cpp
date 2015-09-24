@@ -68,6 +68,10 @@
 #include "renderer/overlaprenderer.h"
 #endif
 
+#ifdef CUSTOMCONTEXT_SIMPLERENDERER
+#include "renderer/simplerenderer.h"
+#endif
+
 #ifdef CUSTOMCONTEXT_MACTEXTURE
 #include "mactexture.h"
 #endif
@@ -281,22 +285,24 @@ Context::Context(QObject *parent)
 
 }
 
-#ifdef CUSTOMCONTEXT_HYBRISTEXTURE
 void Context::renderContextInitialized(QSGRenderContext *ctx)
 {
+#if defined(CUSTOMCONTEXT_HYBRISTEXTURE)
     // This check is delayed until there is an EGL display present.
     m_hybrisTexture = qEnvironmentVariableIsEmpty("CUSTOMCONTEXT_NO_HYBRISTEXTURE");
     if (m_hybrisTexture && strstr(eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS), "EGL_HYBRIS_native_buffer") == 0) {
         qDebug() << "EGL_HYBRIS_native_buffer is not available...";
         m_hybrisTexture = false;
     }
+
 #if defined(CUSTOMCONTEXT_DEBUG)
     qDebug(" - EGL/Hybris based texture: %s", m_hybrisTexture ? "yes" : "no");
 #endif
 
+#endif // CUSTOMCONTEXT_HYBRISTEXTURE
+
     QSGContext::renderContextInitialized(ctx);
 }
-#endif
 
 
 
@@ -496,6 +502,9 @@ QSGRenderer *CONTEXT_CLASS::createRenderer()
         renderer->setClipProgram(m_clipProgram, m_clipMatrixID);
         return renderer;
     }
+#endif
+#ifdef CUSTOMCONTEXT_SIMPLERENDERER
+    return new QSGSimpleRenderer::Renderer(this);
 #endif
     return CONTEXT_CLASS_BASE::createRenderer();
 }
