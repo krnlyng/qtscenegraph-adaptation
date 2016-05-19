@@ -78,6 +78,15 @@ public:
     template<typename ClipRenderer, typename ShaderStateTracker>
     void activate(const QSGClipNode *clip, ClipRenderer *clipRenderer, ShaderStateTracker *tracker, QOpenGLFunctions *gl);
 
+    void reset(QOpenGLFunctions *gl) {
+        if (m_clipType & StencilClip)
+            gl->glDisable(GL_STENCIL_TEST);
+        if (m_clipType & ScissorClip)
+            gl->glDisable(GL_SCISSOR_TEST);
+        m_clipType = NoClip;
+        m_currentClip = 0;
+    }
+
     ClipType clipType() const { return m_clipType; }
     const QSGClipNode *currentClip() const { return m_currentClip; }
 
@@ -175,8 +184,14 @@ void QSGBasicClipManager::activate(const QSGClipNode *clip,
                     m_program = new QOpenGLShaderProgram();
                     QSGShaderSourceBuilder::initializeProgramFromFiles(
                         m_program,
+#if QT_VERSION >= 0x050600
+                        QStringLiteral(":/qt-project.org/scenegraph/shaders/stencilclip.vert"),
+                        QStringLiteral(":/qt-project.org/scenegraph/shaders/stencilclip.frag")
+#else
                         QStringLiteral(":/scenegraph/shaders/stencilclip.vert"),
-                        QStringLiteral(":/scenegraph/shaders/stencilclip.frag"));
+                        QStringLiteral(":/scenegraph/shaders/stencilclip.frag")
+#endif
+                        );
                     m_program->bindAttributeLocation("vCoord", 0);
                     m_program->link();
                     m_clipMatrixId = m_program->uniformLocation("matrix");
