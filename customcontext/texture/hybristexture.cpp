@@ -67,6 +67,7 @@ static QElapsedTimer qsg_renderer_timer;
 
 #define EGL_NATIVE_BUFFER_HYBRIS             0x3140
 
+static bool customcontext_no_bgra = !qgetenv("CUSTOMCONTEXT_NO_BGRA").isEmpty();
 
 namespace CustomContext {
 
@@ -101,16 +102,30 @@ static void initialize()
     eglHybrisReleaseNativeBuffer = (_eglHybrisReleaseNativeBuffer) eglGetProcAddress("eglHybrisReleaseNativeBuffer");
 }
 
-NativeBuffer::NativeBuffer(const QImage &image)
+NativeBuffer::NativeBuffer(const QImage &image_in)
 {
-    hasAlpha = image.hasAlphaChannel();
-    const QImage::Format iformat = image.format();
-    format = iformat == QImage::Format_RGBA8888_Premultiplied
+    const QImage::Format iformat = image_in.format();
+    QImage image_swapped;
+    bool image_is_rgba = iformat == QImage::Format_RGBA8888_Premultiplied
             || iformat == QImage::Format_RGBX8888
-            || iformat == QImage::Format_RGBA8888
-            ? HYBRIS_PIXEL_FORMAT_RGBA_8888
-            : HYBRIS_PIXEL_FORMAT_BGRA_8888;
+            || iformat == QImage::Format_RGBA8888;
+    const QImage &image = (customcontext_no_bgra && !image_is_rgba) ? image_swapped : image_in;
     int usage = HYBRIS_USAGE_SW_READ_RARELY | HYBRIS_USAGE_SW_WRITE_RARELY | HYBRIS_USAGE_HW_TEXTURE;
+
+    hasAlpha = image.hasAlphaChannel();
+
+    if (customcontext_no_bgra && !image_is_rgba) {
+        image_swapped = image_in.rgbSwapped();
+    }
+
+    if (!customcontext_no_bgra) {
+        format = image_is_rgba
+                                ? HYBRIS_PIXEL_FORMAT_RGBA_8888
+                                : HYBRIS_PIXEL_FORMAT_BGRA_8888;
+    } else {
+        format = HYBRIS_PIXEL_FORMAT_RGBA_8888;
+    }
+
     width = image.width();
     height = image.height();
     stride = 0;
